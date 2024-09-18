@@ -1,5 +1,14 @@
 {
     "name": "akrez/http-runner",
+    "type": "library",
+    "description": "Akrez http runner",
+    "keywords": [
+        "akrez",
+        "runner",
+        "http",
+        "emitter"
+    ],
+    "license": "BSD-3-Clause",
     "require": {
         "php": "^8.0",
         "psr/http-message": "^1.0|^2.0"
