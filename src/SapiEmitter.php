@@ -7,32 +7,25 @@ namespace Akrez\HttpRunner;
 use Psr\Http\Message\ResponseInterface;
 
 use function flush;
+use function header;
+use function header_remove;
 use function headers_sent;
-use function in_array;
 use function sprintf;
 
 /**
- * `SapiEmitter` sends a response using standard PHP Server API i.e. with {@see header()} and "echo".
- *
- * @internal
+ * `SapiEmitter` sends a response using standard PHP Server API, i.e., with {@see header()} and "echo".
  */
-class SapiEmitter
+final class SapiEmitter
 {
-    private const NO_BODY_RESPONSE_CODES = [
-        'CONTINUE' => 100,
-        'SWITCHING_PROTOCOLS' => 101,
-        'PROCESSING' => 102,
-        'NO_CONTENT' => 204,
-        'RESET_CONTENT' => 205,
-        'NOT_MODIFIED' => 304,
-    ];
-
     private const DEFAULT_BUFFER_SIZE = 8_388_608; // 8MB
 
+    /**
+     * @psalm-var positive-int
+     */
     private int $bufferSize;
 
     /**
-     * @param  int|null  $bufferSize  The size of the buffer in bytes to send the content of the message body.
+     * @param int|null $bufferSize The size of the buffer in bytes to send the content of the message body.
      */
     public function __construct(?int $bufferSize = null)
     {
@@ -43,61 +36,9 @@ class SapiEmitter
         $this->bufferSize = $bufferSize ?? self::DEFAULT_BUFFER_SIZE;
     }
 
-    /**
-     * Responds to the client with headers and body.
-     *
-     * @param  ResponseInterface  $response  Response object to send.
-     * @param  bool  $withoutBody  If body should be ignored.
-     *
-     * @throws Exception
-     */
     public function emit(ResponseInterface $response, bool $withoutBody = false): void
     {
-        $level = ob_get_level();
-        $status = $response->getStatusCode();
-        $withoutBody = $withoutBody || ! $this->shouldOutputBody($response);
-        $withoutContentLength = $withoutBody || $response->hasHeader('Transfer-Encoding');
-
-        if ($withoutContentLength) {
-            $response = $response->withoutHeader('Content-Length');
-        }
-
-        // We can't send headers if they are already sent.
-        if (headers_sent()) {
-            throw new \Exception('headers have been sent.');
-        }
-
-        header_remove();
-
-        // Send headers.
-        foreach ($response->getHeaders() as $header => $values) {
-            foreach ($values as $value) {
-                header("$header: $value", false);
-            }
-        }
-
-        // Send HTTP Status-Line (must be sent after the headers).
-        header(sprintf(
-            'HTTP/%s %d %s',
-            $response->getProtocolVersion(),
-            $status,
-            $response->getReasonPhrase(),
-        ), true, $status);
-
-        if ($withoutBody) {
-            return;
-        }
-
-        // Adds a `Content-Length` header if a body exists, and it has not been added before.
-        if (! $withoutContentLength && ! $response->hasHeader('Content-Length')) {
-            $contentLength = $response
-                ->getBody()
-                ->getSize();
-
-            if ($contentLength !== null) {
-                header("Content-Length: $contentLength", true);
-            }
-        }
+        $this->emitHeaders($response);
 
         /**
          * Sends headers before the body.
@@ -106,12 +47,53 @@ class SapiEmitter
          */
         flush();
 
-        $this->emitBody($response, $level);
+        if (!$withoutBody) {
+            $this->emitBody($response);
+	}
     }
 
-    private function emitBody(ResponseInterface $response, int $level): void
+    /**
+     * @throws HeadersHaveBeenSentException If headers have already been sent.
+     */
+    private function emitHeaders(ResponseInterface $response): void
     {
+        // We can't send headers if they are already sent
+        if (headers_sent()) {
+            throw new \Exception('headers have been sent.');
+        }
+
+        header_remove();
+
+        $headers = $response->getHeaders();
+
+        // Send headers
+        foreach ($headers as $header => $values) {
+            foreach ($values as $value) {
+                header("$header: $value", false);
+            }
+        }
+
+        // Send HTTP Status-Line (must be sent after the headers)
+        $status = $response->getStatusCode();
+        header(
+            sprintf(
+                'HTTP/%s %d %s',
+                $response->getProtocolVersion(),
+                $status,
+                $response->getReasonPhrase(),
+            ),
+            true,
+            $status
+        );
+    }
+
+    private function emitBody(ResponseInterface $response): void
+    {
+        $level = ob_get_level();
         $body = $response->getBody();
+        if (!$body->isReadable()) {
+            return;
+        }
 
         if ($body->isSeekable()) {
             $body->rewind();
@@ -146,35 +128,5 @@ class SapiEmitter
             ob_end_flush();
         }
         flush();
-    }
-
-    private function shouldOutputBody(ResponseInterface $response): bool
-    {
-        if (in_array($response->getStatusCode(), self::NO_BODY_RESPONSE_CODES, true)) {
-            return false;
-        }
-
-        $body = $response->getBody();
-
-        if (! $body->isReadable()) {
-            return false;
-        }
-
-        $size = $body->getSize();
-
-        if ($size !== null) {
-            return $size > 0;
-        }
-
-        if ($body->isSeekable()) {
-            $body->rewind();
-            $byte = $body->read(1);
-
-            if ($byte === '' || $body->eof()) {
-                return false;
-            }
-        }
-
-        return true;
     }
 }
